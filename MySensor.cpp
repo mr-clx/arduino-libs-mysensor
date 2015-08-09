@@ -21,6 +21,8 @@ const char* _value_kind_names[] {
 "ALL"};
 #define _value_kind_names_count sizeof(_value_kind_names)/sizeof(char *) //array size
 
+
+
 const char* _value_kind_metrics[] = {
 	"Other",
 	"G",
@@ -28,7 +30,7 @@ const char* _value_kind_metrics[] = {
 	"Degrees",
 	"Gyro",
 	"%",
-	"mm Hg",
+	"mm",
 	"cm",
 	"G",
 	"G",
@@ -60,10 +62,8 @@ const char* mysensor_value_metric(uint8_t kind) {
 }
 
 const void mysensor_value_union_print(mysensor_value_u v) {
-	if (v.asFloat==NAN) // bad!
-	Serial.print(F("---"));
-	else
-	Serial.print(v.asFloat);
+	if (v.asFloat==NAN) Serial.print(F("---")); // bad practice!
+	else Serial.print(v.asFloat);
 	Serial.print(' ');
 }
 
@@ -88,6 +88,7 @@ const char* MySensorValue::kindMetric(){
 
 
 void MySensorValue::printInfo() {
+#ifdef MYSENSOR_SERIAL_PRINT
 	Serial.print(F(" id=")); Serial.print(id); Serial.print(F("; "));
 	Serial.print(F(" kind=")); Serial.print(kind); Serial.print(F("; "));
 	Serial.print(mysensor_value_name(kind)); Serial.print(F(" = "));
@@ -97,6 +98,7 @@ void MySensorValue::printInfo() {
 		Serial.print(value.asFloat);
 		Serial.print(" "); Serial.println(mysensor_value_metric(kind));
 	}
+#endif
 }
 
 /*
@@ -134,8 +136,9 @@ void MySensor::init(uint16_t owner, uint8_t id, char* name, uint16_t scanInterva
 	this->local_id = id;
 	if (name) this->name = name;
 	this->scan_interval_sec=scanIntervalSec;
-	// Serial.println(scan_interval_sec*1000UL);
+	this->last_tick_scan=last_tick_scan_success=0;
 	this->values_count=0;
+	this->scan_state=0;
 	//this->on_scan = onScan;
 	//if (onInit) {
 	//	onInit(this);
@@ -144,20 +147,26 @@ void MySensor::init(uint16_t owner, uint8_t id, char* name, uint16_t scanInterva
 
 
 // return value is changed
-// external update: last_tick_scan
+// need external must update: just_scaned, last_tick_scan_success
+//this not updates last_tick_scan !!!
 uint8_t MySensor::scan(bool overrideChanged) {
-	this->just_scaned=true;
-	if (on_scan) return on_scan(this, overrideChanged);
+	// this->just_scaned = false;
+	this->scan_state=1; // waiting results
+	if (on_scan) return on_scan(*this, overrideChanged);
 	else return 0; // override?
+	// external code must set last_tick_scan_ok
 }
  
- // scan if time to scan or override, return = 1 if scan and has changed
+// scan if time to scan or override, return = 1 if scan and has changed
+// must call before long scan procedure (i.e. radio receive)
 uint8_t MySensor::scanOnDemand(uint32_t *tick, bool overrideScan, bool overrideChanged) {
-	just_scaned=false;
+	//just_scaned=false;
+	scan_state=0; // idle
 	if (overrideScan || timeToScan(tick)) {
+#ifdef MYSENSOR_SERIAL_PRINT
 		Serial.println(F("Scan sensor..."));
+#endif
 		last_tick_scan = *tick;
-		// just_scaned = true;
 		return scan(overrideChanged);
 	}
 }
@@ -171,16 +180,12 @@ void MySensor::valuesClear() {
 //todo: scan_interval_sec = 0xFFFF for every tick scan ?
 bool MySensor::timeToScan(uint32_t* tick) {
 	unsigned long elapsed = *tick-last_tick_scan;
-	//Serial.println(scan_interval_sec*1000UL);
-	//Serial.println(elapsed);
-	//delay(1000);
 	if (!last_tick_scan || (scan_interval_sec>0 && elapsed>scan_interval_sec*1000UL))
 	return true;
 	else
 	return false;
 }
 
-// todo: return pointer?
 MySensorValue* MySensor::getValue(uint8_t id, uint8_t kind, bool addIfNone) {
 	uint8_t i=0;
 	while (i<values_count) {
@@ -190,7 +195,7 @@ MySensorValue* MySensor::getValue(uint8_t id, uint8_t kind, bool addIfNone) {
 	
 	if (addIfNone) {
 		if (i>=MYSENSOR_VALUES_CAPACITY) {
-			Serial.print(F("Sensor values capacity is ")); Serial.println(MYSENSOR_VALUES_CAPACITY);
+			Serial.println(F("Not enough MySensor.values capacity!"));
 			return NULL;
 		}
 
@@ -230,26 +235,21 @@ bool MySensor::setValueF(uint8_t id, uint8_t kind, float value, float onlyDeltaA
 
 
 void MySensor::printName(bool printOwner, const char* appendText) {
-	if (name)
-	Serial.print(name);
+	if (name) Serial.print(name);
 
 	if (printOwner || !this->name) {
 		Serial.print(" ("); Serial.print(this->owner);
 		Serial.print("."); Serial.print(this->local_id); Serial.print(")");
 	}
-	if (appendText)
-	Serial.print(appendText);
+	if (appendText)	Serial.print(appendText);
 }
 
 
 void MySensor::printValues(bool printName, bool printId, const char* nameAppendText) {
-	if (printName)
-	this->printName(printId, nameAppendText);
+	if (printName) this->printName(printId, nameAppendText);
 	
 	// Serial.println(sensor.values.count);
-	for (uint8_t i=0; i<values_count; i++) {
-		values[i].printInfo();
-	}
+	for (uint8_t i=0; i<values_count; i++) values[i].printInfo();
 }
 
 
@@ -259,8 +259,8 @@ void MySensor::printValues(bool printName, bool printId, const char* nameAppendT
 *
 */
 
-
-MySensorList::MySensorList() {
+MySensorList::MySensorList(uint8_t capacity) {
+	this->items=new MySensor*[capacity];
 }
 
 MySensor* MySensorList::get(uint16_t owner, uint8_t id, bool addIfNone) {
@@ -269,7 +269,7 @@ MySensor* MySensorList::get(uint16_t owner, uint8_t id, bool addIfNone) {
 	MySensor *s;
 	uint8_t i=0;
 	while (i < this->count) {
-		s = &items[i]; // Serial.print("  list sensor: src="); Serial.print(s->src); Serial.print(" id="); Serial.println(s->id);
+		s = items[i]; 
 		if (s->owner==owner && s->local_id==id)
 		{
 			return s;
@@ -282,21 +282,23 @@ MySensor* MySensorList::get(uint16_t owner, uint8_t id, bool addIfNone) {
 		// Serial.print("sizeof(sensorlist.items)"); Serial.println(sizeof(l->items));
 		//Serial.print("MaxCapaticy="); Serial.println(MYSENSOR_LIST_CAPACITY);
 		if (i>=MYSENSOR_LIST_CAPACITY) {
-			Serial.print(F("ERR: Sensor list capacity is ")); Serial.println(MYSENSOR_LIST_CAPACITY);
+			Serial.print(F("Not enough MySensorList capacity!"));// Serial.println(MYSENSOR_LIST_CAPACITY);
 			return NULL;
 		}
 		
-		s=&items[i];
 		bool isLocal = owner>>12; // mask 0xF000
+		items[i]=new MySensor();
+		s=items[i];
 
 		s->init(owner, id,
-		isLocal? str_sensor_name_local : str_sensor_name_remote,
-		isLocal? INTERVAL_SCAN_LOCAL_SEC : INTERVAL_SCAN_REMOTE_SEC); // no name, no auto-scan interval
+			isLocal? str_sensor_name_local : str_sensor_name_remote,
+			isLocal? MYSENSOR_SCAN_INTERVAL_LOCAL_SEC : MYSENSOR_SCAN_INTERVAL_REMOTE_SEC); // no name, no auto-scan interval
 		
+#ifdef MYSENSOR_SERIAL_PRINT
 		Serial.print(F("New sensor: "));  s->printName(true, NULL); Serial.println();
+#endif
 		
 		count=i+1;
-		//Serial.print("new count=");Serial.println(l->count);
 		return s;
 	}
 	return NULL;

@@ -13,9 +13,19 @@
 #include "WProgram.h"
 #endif
 
+// config
+
+#define MYSENSOR_LIST_CAPACITY 2
+#define MYSENSOR_VALUES_CAPACITY 5
+#define MYSENSOR_SCAN_INTERVAL_LOCAL_SEC 10
+#define MYSENSOR_SCAN_INTERVAL_REMOTE_SEC 60
+
+// allows serial print when sensor added
+#define MYSENSOR_SERIAL_PRINT
+
 // ADAFRUIT unified compatible
 typedef enum {
- none                =(0),
+ None                =(0),
  Aeecelrometer       =(1),
  MagneticField       =(2),
  Orientation         =(3),
@@ -34,27 +44,25 @@ typedef enum {
  Other               =(255)
 } mysensor_value_kind_e;
 
-#define SENS_VALUE_KIND_NONE                0x00
-#define SENS_VALUE_KIND_ACCELEROMETER       0x01
-#define SENS_VALUE_KIND_MAGNETIC_FIELD      0x02
-#define SENS_VALUE_KIND_ORIENTATION         0x03
-#define SENS_VALUE_KIND_GYROSCOPE           0x04
-#define SENS_VALUE_KIND_LIGHT               0x05
-#define SENS_VALUE_KIND_PRESSURE            0x06
-#define SENS_VALUE_KIND_PROXIMITY           0x07
-#define SENS_VALUE_KIND_GRAVITY             0x08
-#define SENS_VALUE_KIND_LINEAR_ACCELERATION 0x09
-#define SENS_VALUE_KIND_ROTATION_VECTOR     0x0A
-#define SENS_VALUE_KIND_RELATIVE_HUMIDITY   0x0B
-#define SENS_VALUE_KIND_AMBIENT_TEMPERATURE 0x0C
-#define SENS_VALUE_KIND_VOLTAGE             0x0D
-#define SENS_VALUE_KIND_CURRENT             0x0E
-#define SENS_VALUE_KIND_COLOR               0x0F
-#define SENS_VALUE_KIND_HEAT_INDEX          0x10
-#define SENS_VALUE_KIND_OTHER               0xFF
+#define MYSENSOR_VALUE_KIND_NONE                0x00
+#define MYSENSOR_VALUE_KIND_ACCELEROMETER       0x01
+#define MYSENSOR_VALUE_KIND_MAGNETIC_FIELD      0x02
+#define MYSENSOR_VALUE_KIND_ORIENTATION         0x03
+#define MYSENSOR_VALUE_KIND_GYROSCOPE           0x04
+#define MYSENSOR_VALUE_KIND_LIGHT               0x05
+#define MYSENSOR_VALUE_KIND_PRESSURE            0x06
+#define MYSENSOR_VALUE_KIND_PROXIMITY           0x07
+#define MYSENSOR_VALUE_KIND_GRAVITY             0x08
+#define MYSENSOR_VALUE_KIND_LINEAR_ACCELERATION 0x09
+#define MYSENSOR_VALUE_KIND_ROTATION_VECTOR     0x0A
+#define MYSENSOR_VALUE_KIND_RELATIVE_HUMIDITY   0x0B
+#define MYSENSOR_VALUE_KIND_TEMPERATURE 	0x0C
+#define MYSENSOR_VALUE_KIND_VOLTAGE             0x0D
+#define MYSENSOR_VALUE_KIND_CURRENT             0x0E
+#define MYSENSOR_VALUE_KIND_COLOR               0x0F
+#define MYSENSOR_VALUE_KIND_HEAT_INDEX          0x10
+#define MYSENSOR_VALUE_KIND_OTHER               0xFF
 
-#define INTERVAL_SCAN_LOCAL_SEC 10
-#define INTERVAL_SCAN_REMOTE_SEC 60
 
 /*
 *    device(id)
@@ -63,9 +71,6 @@ typedef enum {
 *          <- value2 (kind,id)
 *
 */
-
-#define MYSENSOR_LIST_CAPACITY 2
-#define MYSENSOR_VALUES_CAPACITY 5
 
 // unified sensor read value (4bytes)
 typedef union {
@@ -82,7 +87,7 @@ typedef union {
 class MySensorValue {
 	public:
 		uint8_t id;     // sensor value id
-		uint8_t kind;   // values kind SENS_VALUE_KIND... (for one id can be few kind)
+		uint8_t kind;   // values kind MYSENSOR_VALUE_KIND... (for one id can be few kind)
 		mysensor_value_u value;
 	
 		// todo : max, min
@@ -112,16 +117,20 @@ class MySensor {
 		char* name;                 // Sensor group name: e.g: "Local", "Remote"
 		uint16_t owner;             // owner device id (mask for Master sensors: 0xFFFF0000, for Slave sensors: 0x0000FFFF)
 		uint8_t local_id;           // sensor local_id for device (1...0xFF)
+		//uint8_t capacity;
 	
 		MySensorValue values[MYSENSOR_VALUES_CAPACITY];
 		uint8_t values_count;
 
 		// void (*on_init)(MySensor* s);              // sensor initialization
-		uint8_t (*on_scan)(MySensor* s, bool overrideChanged); // on sensor values scan
+		uint8_t (*on_scan)(MySensor& s, bool overrideChanged); // on sensor values scan
 	
-		uint16_t scan_interval_sec; // auto-scan interval time ( 0= local, PipeN for remote), set when sensor created
-		uint32_t last_tick_scan;    // last sensor scan
-		uint8_t just_scaned;        // dynamic: flag: reset every cycle and set if values received
+		uint16_t scan_interval_sec; 	// auto-scan interval time ( 0= local, PipeN for remote), set when sensor created
+		uint32_t last_tick_scan;    	// last sensor scan try
+		uint32_t last_tick_scan_success; //dynamic: external access (on_scan): when scan has success result
+		//uint8_t just_scaned;        	// dynamic: external access (on_scan): reset every scan cycle and set if values received
+		//uint8_t last_scan_result;       // 0= unknown, 
+		uint8_t scan_state;             // 0 = idle, 1=waiting scan results, 2=results received (or timeout)
 
 		MySensor();
 		void init(uint16_t owner, uint8_t id, char* name, uint16_t scanIntervalSec); //, void (*onInit)(MySensor *s), uint8_t (*onScan)(MySensor *s, bool everride));
@@ -143,10 +152,11 @@ class MySensor {
 
 class MySensorList {
 	public:
-		MySensor items[MYSENSOR_LIST_CAPACITY];
+		MySensor** items;
+		uint8_t capacity;
 		uint8_t count;
 
-		MySensorList();
+		MySensorList(uint8_t capacity);
 		MySensor* get(uint16_t owner, uint8_t id, bool addIfNone);
 };
 
